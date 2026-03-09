@@ -10,6 +10,7 @@ from einops_exts import rearrange_many, repeat_many, check_shape
 from rotary_embedding_torch import RotaryEmbedding
 
 from diff_utils.model_utils import * 
+from models.archs.encoders.point_mae import PointMAEEncoder
 
 from random import sample
 
@@ -152,10 +153,26 @@ class DiffusionNet(nn.Module):
         self.learned_query = nn.Parameter(torch.randn(self.dim_in_out))
         self.causal_transformer = CausalTransformer(dim = dim, dim_in_out=self.dim_in_out, **kwargs)
 
-        if cond:
-            # output dim of pointnet needs to match model dim; unless add additional linear layer
-            self.pointnet = ConvPointnet(c_dim=self.point_feature_dim) 
+        self.cond_encoder_type = kwargs.get("cond_encoder", "conv_pointnet")
 
+        if cond:
+            if self.cond_encoder_type == "point_mae":
+                pmae_cfg = kwargs.get("point_mae_specs", {})
+                self.pointnet = PointMAEEncoder(
+                    out_dim=self.point_feature_dim, **pmae_cfg
+                )
+                if pmae_cfg.get("pretrained_path"):
+                    self.pointnet.load_pretrained(pmae_cfg["pretrained_path"])
+            else:
+                self.pointnet = ConvPointnet(c_dim=self.point_feature_dim)
+
+
+    def _encode_cond(self, cond, device):
+        """Encode a point cloud into conditioning features."""
+        if self.cond_encoder_type == "point_mae":
+            return self.pointnet(cond)               # (B, G, pf_dim)
+        else:
+            return self.pointnet(cond, cond)          # (B, N, pf_dim)
 
     def forward(
         self,
@@ -176,13 +193,12 @@ class DiffusionNet(nn.Module):
                 prob = torch.randint(low=0, high=10, size=(1,))
                 percentage = 8
                 if prob < percentage or pass_cond==0:
-                    cond_feature = torch.zeros( (cond.shape[0], cond.shape[1], self.point_feature_dim), device=data.device )
-                    #print("zeros shape: ", cond_feature.shape) 
+                    cond_feature = self._encode_cond(cond, data.device)
+                    cond_feature = torch.zeros_like(cond_feature)
                 elif prob >= percentage or pass_cond==1:
-                    cond_feature = self.pointnet(cond, cond)
-                    #print("cond shape: ", cond_feature.shape)
+                    cond_feature = self._encode_cond(cond, data.device)
             else:
-                cond_feature = self.pointnet(cond, cond)
+                cond_feature = self._encode_cond(cond, data.device)
 
             
         batch, dim, device, dtype = *data.shape, data.device, data.dtype

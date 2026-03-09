@@ -29,6 +29,17 @@
     "cond" : true,
     "cross_attn" : true,
     "cond_dropout": true,
-    "point_feature_dim" : 128
+    "point_feature_dim" : 128,
+    "cond_encoder" : "point_mae",
+    "point_mae_specs" : {
+      "num_group" : 64,
+      "group_size" : 32,
+      "encoder_dim" : 384,
+      "trans_dim" : 384,
+      "depth" : 12,
+      "num_heads" : 6,
+      "drop_path_rate" : 0.1,
+      "freeze" : false
+    }
   }
 }
