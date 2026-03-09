@@ -23,7 +23,12 @@ class CombinedModel(pl.LightningModule):
             self.vae_model = BetaVAE(in_channels=feature_dim*3, latent_dim=modulation_dim, hidden_dims=hidden_dims, kl_std=latent_std)
 
         if self.task in ('combined', 'diffusion'):
-            self.diffusion_model = DiffusionModel(model=DiffusionNet(**specs["diffusion_model_specs"]), **specs["diffusion_specs"]) 
+            gen_type = specs.get("generative_model", "ddpm")
+            net = DiffusionNet(**specs["diffusion_model_specs"])
+            if gen_type == "flow_matching":
+                self.diffusion_model = FlowMatchingModel(model=net, **specs.get("flow_matching_specs", {}))
+            else:
+                self.diffusion_model = DiffusionModel(model=net, **specs["diffusion_specs"])
  
 
     def training_step(self, x, idx):
