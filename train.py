@@ -37,10 +37,11 @@ def train():
         train_dataset = ModulationLoader(specs["data_path"], pc_path=specs.get("pc_path",None), split_file=split, pc_size=specs.get("total_pc_size", None))
     else:
         train_dataset = SdfLoader(specs["DataSource"], split, pc_size=specs.get("PCsize",1024), grid_source=specs.get("GridSource", None), modulation_path=specs.get("modulation_path", None))
+    persistent_workers = args.workers > 0
     train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=args.batch_size, num_workers=args.workers,
-            drop_last=True, shuffle=True, pin_memory=True, persistent_workers=True
+            drop_last=True, shuffle=True, pin_memory=True, persistent_workers=persistent_workers
         )
 
     # creates a copy of current code / files in the config folder

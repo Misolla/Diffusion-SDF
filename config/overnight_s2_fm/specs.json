@@ -1,0 +1,45 @@
+{
+  "Description" : "Overnight Stage 2: Flow Matching training (conditional, couch_mini, 20K epochs)",
+  "pc_path" : "data",
+  "total_pc_size" : 10000,
+  "TrainSplit" : "data/splits/couch_mini.json",
+  "TestSplit" : "data/splits/couch_mini.json",
+  "data_path" : "config/overnight_s1/modulations",
+
+  "training_task": "diffusion",
+  "generative_model": "flow_matching",
+
+  "num_epochs" : 20000,
+  "log_freq" : 2000,
+
+  "diff_lr" : 1e-5,
+
+  "flow_matching_specs" : {
+    "num_sample_steps" : 50,
+    "solver" : "euler",
+    "perturb_pc" : "partial",
+    "crop_percent": 0.5,
+    "sample_pc_size" : 128
+  },
+  "diffusion_model_specs": {
+    "dim" : 768,
+    "depth" : 4,
+    "ff_dropout" : 0.3,
+    "num_timesteps" : null,
+    "cond" : true,
+    "cross_attn" : true,
+    "cond_dropout": true,
+    "point_feature_dim" : 128,
+    "cond_encoder" : "point_mae",
+    "point_mae_specs" : {
+      "num_group" : 64,
+      "group_size" : 32,
+      "encoder_dim" : 384,
+      "trans_dim" : 384,
+      "depth" : 12,
+      "num_heads" : 6,
+      "drop_path_rate" : 0.1,
+      "freeze" : false
+    }
+  }
+}
