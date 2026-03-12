@@ -1,0 +1,62 @@
+{
+  "Description" : "Improved Stage 3: FM + Point-MAE end-to-end, LR 5e-5 with 500-epoch warmup (5000 epochs)",
+  "DataSource" : "data",
+  "GridSource" : "data/grid_data",
+  "TrainSplit" : "data/splits/couch_mini.json",
+  "TestSplit" : "data/splits/couch_mini.json",
+  "modulation_path" : "config/pipeclean_s1/modulations",
+
+  "modulation_ckpt_path" : "config/pipeclean_s1/last.ckpt",
+  "diffusion_ckpt_path" : "config/improved_s2_fm/last.ckpt",
+
+  "training_task": "combined",
+  "generative_model": "flow_matching",
+
+  "num_epochs" : 5000,
+  "log_freq" : 1000,
+  "warmup_epochs" : 500,
+
+  "kld_weight" : 1e-5,
+  "latent_std" : 0.25,
+
+  "sdf_lr" : 1e-4,
+  "diff_lr" : 5e-5,
+
+  "SdfModelSpecs" : {
+    "hidden_dim" : 512,
+    "latent_dim" : 256,
+    "pn_hidden_dim" : 128,
+    "num_layers" : 9
+  },
+  "SampPerMesh" : 16000,
+  "PCsize" : 1024,
+
+  "flow_matching_specs" : {
+    "num_sample_steps" : 50,
+    "solver" : "euler",
+    "perturb_pc" : "partial",
+    "crop_percent": 0.5,
+    "sample_pc_size" : 128
+  },
+  "diffusion_model_specs": {
+    "dim" : 768,
+    "depth" : 4,
+    "ff_dropout" : 0.3,
+    "num_timesteps" : null,
+    "cond" : true,
+    "cross_attn" : true,
+    "cond_dropout": true,
+    "point_feature_dim" : 128,
+    "cond_encoder" : "point_mae",
+    "point_mae_specs" : {
+      "num_group" : 64,
+      "group_size" : 32,
+      "encoder_dim" : 384,
+      "trans_dim" : 384,
+      "depth" : 12,
+      "num_heads" : 6,
+      "drop_path_rate" : 0.1,
+      "freeze" : false
+    }
+  }
+}

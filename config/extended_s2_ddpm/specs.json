@@ -1,0 +1,33 @@
+{
+  "Description" : "Extended Stage 2: DDPM diffusion (5000 epochs)",
+  "pc_path" : "data",
+  "total_pc_size" : 10000,
+  "TrainSplit" : "data/splits/couch_mini.json",
+  "TestSplit" : "data/splits/couch_mini.json",
+  "data_path" : "config/pipeclean_s1/modulations",
+
+  "training_task": "diffusion",
+
+  "num_epochs" : 5000,
+  "log_freq" : 500,
+
+  "diff_lr" : 1e-5,
+
+  "diffusion_specs" : {
+    "timesteps" : 1000,
+    "objective" : "pred_x0",
+    "loss_type" : "l2",
+    "perturb_pc" : "partial",
+    "crop_percent": 0.5,
+    "sample_pc_size" : 128
+  },
+  "diffusion_model_specs": {
+    "dim" : 768,
+    "depth" : 4,
+    "ff_dropout" : 0.3,
+    "cond" : true,
+    "cross_attn" : true,
+    "cond_dropout": true,
+    "point_feature_dim" : 128
+  }
+}

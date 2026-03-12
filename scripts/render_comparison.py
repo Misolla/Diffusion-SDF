@@ -15,6 +15,12 @@ Usage:
       --fm-ckpt config/pipeclean_s2_fm/last.ckpt \
       --s1-ckpt config/pipeclean_s1/last.ckpt
 
+  # With ground truth ShapeNet meshes:
+  python scripts/render_comparison.py \
+      --ddpm-ckpt config/pipeclean_s3_ddpm/last.ckpt \
+      --fm-ckpt config/pipeclean_s3_fm/last.ckpt \
+      --gt-dir gt_meshes
+
   # Custom output and sample count:
   python scripts/render_comparison.py \
       --ddpm-ckpt ... --fm-ckpt ... \
@@ -23,6 +29,7 @@ Usage:
 import os
 import sys
 import json
+import time
 import warnings
 import argparse
 
@@ -127,11 +134,21 @@ def collect_instances(split_path, data_source, max_count):
 
 @torch.no_grad()
 def generate_meshes(model, point_cloud, output_dir, num_samples=1, mesh_res=128):
-    """Generate .ply meshes from a point cloud using the model's diffusion + VAE + SDF pipeline."""
+    """Generate .ply meshes from a point cloud.
+
+    Returns (list_of_ply_paths, diffusion_time_seconds, total_time_seconds).
+    diffusion_time covers only the latent sampling; total_time includes decoding + marching cubes.
+    """
     pc = point_cloud.unsqueeze(0).cuda()
+
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
     samples = model.diffusion_model.generate_from_pc(
         pc, batch=num_samples, return_pc=False, perturb_pc=False,
     )
+    torch.cuda.synchronize()
+    t_diffusion = time.perf_counter() - t0
+
     plane_features = model.vae_model.decode(samples)
 
     paths = []
@@ -145,7 +162,19 @@ def generate_meshes(model, point_cloud, output_dir, num_samples=1, mesh_res=128)
         ply = stem + ".ply"
         if os.path.exists(ply):
             paths.append(ply)
-    return paths
+
+    torch.cuda.synchronize()
+    t_total = time.perf_counter() - t0
+    return paths, t_diffusion, t_total
+
+
+def _rotate_x_90(pts):
+    """Rotate points +90 degrees around X axis: (x,y,z) -> (x,-z,y)."""
+    rotated = np.empty_like(pts)
+    rotated[:, 0] = pts[:, 0]
+    rotated[:, 1] = -pts[:, 2]
+    rotated[:, 2] = pts[:, 1]
+    return rotated
 
 
 def render_mesh(ply_path, elev=25, azim=135):
@@ -159,7 +188,7 @@ def render_mesh(ply_path, elev=25, azim=135):
     fig = plt.figure(figsize=(4, 4), dpi=150)
     ax = fig.add_subplot(111, projection="3d")
 
-    verts = np.asarray(tm.vertices)
+    verts = _rotate_x_90(np.asarray(tm.vertices))
     faces = np.asarray(tm.faces)
 
     if len(faces) > 50000:
@@ -187,6 +216,8 @@ def render_mesh(ply_path, elev=25, azim=135):
 
 def render_pointcloud(pc_np, elev=25, azim=135):
     """Render a point cloud to a numpy RGB image via matplotlib."""
+    pc_np = _rotate_x_90(pc_np)
+
     fig = plt.figure(figsize=(4, 4), dpi=150)
     ax = fig.add_subplot(111, projection="3d")
 
@@ -210,39 +241,91 @@ def render_pointcloud(pc_np, elev=25, azim=135):
     return img
 
 
-def create_comparison_grid(pc_img, ddpm_imgs, fm_imgs, output_path, instance_id):
-    """Build a comparison grid: input PC | DDPM samples | FM samples (two rows)."""
-    n_cols = 1 + max(len(ddpm_imgs), len(fm_imgs))
+def find_gt_mesh(gt_dir, instance_id):
+    """Look for a ground truth mesh in gt_dir/{instance_id}/."""
+    if gt_dir is None:
+        return None
+    candidates = [
+        os.path.join(gt_dir, instance_id, "model_normalized.ply"),
+        os.path.join(gt_dir, instance_id, "model_normalized.obj"),
+        os.path.join(gt_dir, instance_id, "model.ply"),
+        os.path.join(gt_dir, instance_id, "model.obj"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
 
-    fig = plt.figure(figsize=(4 * n_cols, 8.5), dpi=150)
-    gs = GridSpec(2, n_cols, figure=fig, wspace=0.03, hspace=0.10)
 
-    ax_pc = fig.add_subplot(gs[:, 0])
+def _fmt_time(seconds):
+    if seconds < 1:
+        return f"{seconds*1000:.0f}ms"
+    return f"{seconds:.1f}s"
+
+
+def create_comparison_grid(pc_img, gt_img, ddpm_imgs, fm_imgs, output_path, instance_id,
+                           ddpm_times=None, fm_times=None):
+    """Build a comparison grid: GT | Input PC | DDPM samples | FM samples (two rows).
+
+    ddpm_times / fm_times: optional (diffusion_sec, total_sec) tuples.
+    """
+    has_gt = gt_img is not None
+    left_cols = 2 if has_gt else 1
+    sample_cols = max(len(ddpm_imgs), len(fm_imgs))
+    n_cols = left_cols + sample_cols
+
+    fig = plt.figure(figsize=(4 * n_cols, 9.0), dpi=150)
+    gs = GridSpec(2, n_cols, figure=fig, wspace=0.03, hspace=0.12)
+
+    col = 0
+    if has_gt:
+        ax_gt = fig.add_subplot(gs[:, col])
+        ax_gt.imshow(gt_img)
+        ax_gt.set_title("Ground Truth", fontsize=11, fontweight="bold", color="#2e7d32")
+        ax_gt.axis("off")
+        col += 1
+
+    ax_pc = fig.add_subplot(gs[:, col])
     ax_pc.imshow(pc_img)
     ax_pc.set_title("Input Point Cloud", fontsize=11, fontweight="bold")
     ax_pc.axis("off")
+    col += 1
 
     for i, img in enumerate(ddpm_imgs):
-        ax = fig.add_subplot(gs[0, i + 1])
+        ax = fig.add_subplot(gs[0, col + i])
         if img is not None:
             ax.imshow(img)
         ax.set_title(f"DDPM sample {i}", fontsize=10)
         ax.axis("off")
+
     if ddpm_imgs:
-        fig.text(0.5, 0.92, "DDPM (ConvPointnet)", ha="center", fontsize=13, fontweight="bold",
-                 transform=fig.transFigure)
+        x_center = (col + col + len(ddpm_imgs) - 1) / 2 / n_cols
+        fig.text(x_center, 0.95, "DDPM (ConvPointnet)", ha="center", fontsize=13,
+                 fontweight="bold", transform=fig.transFigure)
+        if ddpm_times:
+            d_sec, t_sec = ddpm_times
+            fig.text(x_center, 0.91, f"sampling: {_fmt_time(d_sec)}  |  total: {_fmt_time(t_sec)}",
+                     ha="center", fontsize=10, color="#555555", transform=fig.transFigure)
 
     for i, img in enumerate(fm_imgs):
-        ax = fig.add_subplot(gs[1, i + 1])
+        ax = fig.add_subplot(gs[1, col + i])
         if img is not None:
             ax.imshow(img)
         ax.set_title(f"FM sample {i}", fontsize=10)
         ax.axis("off")
-    if fm_imgs:
-        fig.text(0.5, 0.46, "Flow Matching (Point-MAE)", ha="center", fontsize=13, fontweight="bold",
-                 transform=fig.transFigure)
 
-    fig.suptitle(f"Instance: {instance_id}", fontsize=14, y=1.0)
+    if fm_imgs:
+        x_center = (col + col + len(fm_imgs) - 1) / 2 / n_cols
+        # fig.text(x_center, 0.49, "Flow Matching (Point-MAE)", ha="center", fontsize=13,
+        #          fontweight="bold", transform=fig.transFigure)
+        fig.text(x_center, 0.49, "Flow Matching (ConvPointnet)", ha="center", fontsize=13,
+                 fontweight="bold", transform=fig.transFigure)
+        if fm_times:
+            d_sec, t_sec = fm_times
+            fig.text(x_center, 0.45, f"sampling: {_fmt_time(d_sec)}  |  total: {_fmt_time(t_sec)}",
+                     ha="center", fontsize=10, color="#555555", transform=fig.transFigure)
+
+    fig.suptitle(f"Instance: {instance_id}", fontsize=14, y=1.01)
     fig.savefig(output_path, bbox_inches="tight", dpi=150, facecolor="white")
     plt.close(fig)
 
@@ -255,6 +338,8 @@ def main():
     parser.add_argument("--fm-ckpt", required=True, help="Path to FM checkpoint")
     parser.add_argument("--s1-ckpt", default=None,
                         help="Stage 1 (SDF-VAE) checkpoint; required when using Stage 2 checkpoints")
+    parser.add_argument("--gt-dir", default=None,
+                        help="Directory with GT meshes: gt_dir/{instance_id}/model_normalized.ply")
     parser.add_argument("--split", default=None,
                         help="Override split file (default: from specs.json)")
     parser.add_argument("--data-source", default=None,
@@ -264,6 +349,8 @@ def main():
     parser.add_argument("--samples-per-shape", type=int, default=3)
     parser.add_argument("--mesh-res", type=int, default=128,
                         help="Marching cubes grid resolution (default: 128)")
+    parser.add_argument("--fm-steps", type=int, default=50,
+                        help="Override FM sampling steps (default: use model config)")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -284,6 +371,10 @@ def main():
     print(f"Loading FM model from {args.fm_ckpt} ...")
     fm_model = load_model(args.fm_ckpt, s1_ckpt=args.s1_ckpt)
 
+    if args.fm_steps is not None:
+        fm_model.diffusion_model.num_sample_steps = args.fm_steps
+        print(f"  Overriding FM sampling steps to {args.fm_steps}")
+
     for idx, (cls, inst, csv_path) in enumerate(instances, 1):
         print(f"\n[{idx}/{len(instances)}] {cls}/{inst}")
         inst_dir = os.path.join(args.output, inst)
@@ -294,23 +385,33 @@ def main():
         plt.imsave(os.path.join(inst_dir, "input_pc.png"), pc_img)
         print("  Saved input_pc.png")
 
+        gt_img = None
+        gt_path = find_gt_mesh(args.gt_dir, inst)
+        if gt_path:
+            print(f"  Rendering GT mesh: {gt_path}")
+            gt_img = render_mesh(gt_path)
+            if gt_img is not None:
+                plt.imsave(os.path.join(inst_dir, "gt.png"), gt_img)
+        elif args.gt_dir:
+            print(f"  Warning: no GT mesh found for {inst}")
+
         print("  Generating DDPM meshes ...")
         ddpm_dir = os.path.join(inst_dir, "ddpm")
         os.makedirs(ddpm_dir, exist_ok=True)
-        ddpm_plys = generate_meshes(
+        ddpm_plys, ddpm_diff_t, ddpm_total_t = generate_meshes(
             ddpm_model, pc, ddpm_dir,
             num_samples=args.samples_per_shape, mesh_res=args.mesh_res,
         )
-        print(f"  DDPM: {len(ddpm_plys)} meshes")
+        print(f"  DDPM: {len(ddpm_plys)} meshes  (sampling: {ddpm_diff_t:.2f}s, total: {ddpm_total_t:.2f}s)")
 
         print("  Generating FM meshes ...")
         fm_dir = os.path.join(inst_dir, "fm")
         os.makedirs(fm_dir, exist_ok=True)
-        fm_plys = generate_meshes(
+        fm_plys, fm_diff_t, fm_total_t = generate_meshes(
             fm_model, pc, fm_dir,
             num_samples=args.samples_per_shape, mesh_res=args.mesh_res,
         )
-        print(f"  FM: {len(fm_plys)} meshes")
+        print(f"  FM: {len(fm_plys)} meshes  (sampling: {fm_diff_t:.2f}s, total: {fm_total_t:.2f}s)")
 
         ddpm_imgs = [render_mesh(p) for p in ddpm_plys]
         fm_imgs = [render_mesh(p) for p in fm_plys]
@@ -323,8 +424,10 @@ def main():
                 plt.imsave(os.path.join(inst_dir, f"fm_{i}.png"), img)
 
         create_comparison_grid(
-            pc_img, ddpm_imgs, fm_imgs,
+            pc_img, gt_img, ddpm_imgs, fm_imgs,
             os.path.join(inst_dir, "comparison.png"), inst,
+            ddpm_times=(ddpm_diff_t, ddpm_total_t),
+            fm_times=(fm_diff_t, fm_total_t),
         )
         print(f"  -> {inst_dir}/comparison.png")
 

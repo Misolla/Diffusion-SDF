@@ -58,13 +58,23 @@ class CombinedModel(pl.LightningModule):
                 ]
 
         optimizer = torch.optim.Adam(params_list)
-        return {
+
+        warmup_epochs = self.specs.get("warmup_epochs", 0)
+        if warmup_epochs > 0:
+            def lr_lambda(epoch):
+                if epoch < warmup_epochs:
+                    return (epoch + 1) / warmup_epochs
+                return 1.0
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            return {
                 "optimizer": optimizer,
-                # "lr_scheduler": {
-                # "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=50000, threshold=0.0002, min_lr=1e-6, verbose=False),
-                # "monitor": "total"
-                # }
-        }
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "epoch",
+                }
+            }
+
+        return {"optimizer": optimizer}
 
 
     #-----------different training steps for sdf modulation, diffusion, combined----------
