@@ -119,7 +119,7 @@ def load_point_cloud(csv_path, pc_size=1024):
     return torch.from_numpy(surface[idx]).float()
 
 
-def collect_instances(split_path, data_source, max_count):
+def collect_instances(split_path, data_source, max_count, seed=None):
     """Collect instance (class, id, csv_path) tuples from a split file."""
     split = json.load(open(split_path))
     instances = []
@@ -129,6 +129,9 @@ def collect_instances(split_path, data_source, max_count):
                 csv = os.path.join(data_source, dataset, cls, inst, "sdf_data.csv")
                 if os.path.isfile(csv):
                     instances.append((cls, inst, csv))
+    if seed is not None:
+        import random
+        random.Random(seed).shuffle(instances)
     return instances[:max_count]
 
 
@@ -295,13 +298,15 @@ def create_comparison_grid(pc_img, gt_img, ddpm_imgs, fm_imgs, output_path, inst
         ax = fig.add_subplot(gs[0, col + i])
         if img is not None:
             ax.imshow(img)
-        ax.set_title(f"DDPM sample {i}", fontsize=10)
+        ax.set_title(f"FM_MAE sample {i}", fontsize=10)
         ax.axis("off")
 
     if ddpm_imgs:
         x_center = (col + col + len(ddpm_imgs) - 1) / 2 / n_cols
-        fig.text(x_center, 0.95, "DDPM (ConvPointnet)", ha="center", fontsize=13,
+        fig.text(x_center, 0.95, "Flow Matching (Point-MAE)", ha="center", fontsize=13,
                  fontweight="bold", transform=fig.transFigure)
+        # fig.text(x_center, 0.49, "Flow Matching (Point-MAE)", ha="center", fontsize=13,
+        #          fontweight="bold", transform=fig.transFigure)
         if ddpm_times:
             d_sec, t_sec = ddpm_times
             fig.text(x_center, 0.91, f"sampling: {_fmt_time(d_sec)}  |  total: {_fmt_time(t_sec)}",
@@ -349,8 +354,10 @@ def main():
     parser.add_argument("--samples-per-shape", type=int, default=3)
     parser.add_argument("--mesh-res", type=int, default=128,
                         help="Marching cubes grid resolution (default: 128)")
-    parser.add_argument("--fm-steps", type=int, default=50,
+    parser.add_argument("--fm-steps", type=int, default=None,
                         help="Override FM sampling steps (default: use model config)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for shuffling which instances to render")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -359,7 +366,7 @@ def main():
     split_file = args.split or ddpm_specs.get("TestSplit", ddpm_specs.get("TrainSplit"))
     data_source = args.data_source or ddpm_specs.get("DataSource", "data")
 
-    instances = collect_instances(split_file, data_source, args.num_shapes)
+    instances = collect_instances(split_file, data_source, args.num_shapes, seed=args.seed)
     if not instances:
         print("ERROR: no instances found. Check --split and --data-source.")
         sys.exit(1)

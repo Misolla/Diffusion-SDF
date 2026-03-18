@@ -62,8 +62,8 @@ config/*/version_*/
 renders/
 verify_output/
 
-# # Logs
-# *.log
+# Logs
+*.log
 
 # Generated meshes
 *.ply

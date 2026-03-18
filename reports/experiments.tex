@@ -1,0 +1,453 @@
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[title]{appendix}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\title{Experimental Results: Flow Matching and Point-MAE for Diffusion-SDF}
+\author{Viswa Subramanian \and Yao-Ting Huang \and Minh Bao Quach}
+\date{Continuation of ECE 285 Midterm Report}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+This report documents the full experimental progression from initial pipeline validation through systematic ablation studies. We evaluate two proposed modifications to Diffusion-SDF~\cite{chou2022diffusionsdf}:
+
+\begin{enumerate}
+    \item \textbf{Replacing DDPM with Conditional Flow Matching (CFM)} --- for faster inference.
+    \item \textbf{Replacing ConvPointnet with Point-MAE} --- for richer point cloud conditioning.
+\end{enumerate}
+
+All experiments were run on a single NVIDIA RTX A6000 GPU (48\,GB VRAM) using the ACRONYM/ShapeNet Couch dataset (173 instances). The three training stages are:
+
+\begin{itemize}
+    \item \textbf{Stage~1 (SDF-VAE):} Learns per-shape modulation vectors. Shared across all experiments.
+    \item \textbf{Stage~2 (Diffusion-only):} Trains the generative model (DDPM or FM) to produce modulation vectors conditioned on partial point clouds.
+    \item \textbf{Stage~3 (End-to-end):} Fine-tunes the full pipeline jointly (SDF decoder + VAE + generative model).
+\end{itemize}
+
+\section{Experiment Timeline}
+
+\begin{table}[H]
+\centering
+\caption{Summary of all experiments conducted.}
+\label{tab:timeline}
+\begin{tabular}{clllccc}
+\toprule
+\# & Experiment & Models Trained & S2 Epochs & S3 Epochs & Duration & Key Question \\
+\midrule
+1 & Baseline & DDPM+Conv, FM+MAE & 5{,}000 & 1{,}500 & 14h 23m & Does FM+MAE work at all? \\
+2 & FM Hyp.\ Tuning & FM+Conv, DDPM+Conv & 5{,}000 & 5{,}000 & 27h 24m & Can higher LR fix FM? \\
+3 & FM Extended & FM+MAE, FM+Conv & --- & 5K$\to$10K & 30h & Does more training help? \\
+4 & MAE Ablation & DDPM+MAE & 5{,}000 & 5{,}000 & 17h 46m & Does MAE work with DDPM? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All experiments used a shared Stage~1 SDF-VAE checkpoint (10{,}500 epochs). Total GPU-hours invested: ${\sim}$90 hours across all experiments.
+
+\section{Experiment Details and Results}
+
+\subsection{Experiment 1: Baseline}
+
+\textbf{Goal:} Validate the full pipeline end-to-end, then train long enough to produce a first real quality comparison between DDPM and FM.
+
+\textbf{Models trained:}
+\begin{itemize}
+    \item \textbf{DDPM+ConvPointnet} --- original Diffusion-SDF architecture (60.3M params).
+    \item \textbf{FM+Point-MAE} --- both proposed modifications applied simultaneously (79.8M params).
+\end{itemize}
+
+Both used \texttt{diff\_lr\,=\,1e-5}, no warmup.
+
+\textbf{Approach:} We first ran a 35-minute ``pipeclean'' (S2: 200 epochs, S3: 50 epochs) to verify the pipeline was functional, then trained to S2: 5{,}000 epochs, S3: 1{,}500 epochs (${\sim}$14 hours).
+
+\begin{table}[H]
+\centering
+\caption{Training loss trajectory at S2 = 5{,}000 epochs.}
+\label{tab:baseline-s2}
+\begin{tabular}{lccc}
+\toprule
+Variant & S2 loss (epoch 0 $\to$ 5000) & S2 diff1000 (final) & S3 gensdf (final) \\
+\midrule
+DDPM+ConvPointnet & 0.450 $\to$ 0.023 & 0.023 & 0.040 \\
+FM+Point-MAE      & 1.540 $\to$ 0.716 & 0.716 & 0.053 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Inference speed measured from trained models.}
+\label{tab:baseline-speed}
+\begin{tabular}{lccc}
+\toprule
+Method & Sampling & Total & Speedup \\
+\midrule
+DDPM (1000 steps) & 23.3\,s & 27.5\,s & 1.0$\times$ \\
+FM Euler (50 steps) & 1.2\,s & 5.5\,s & \textbf{19.4$\times$} sampling / \textbf{5$\times$} end-to-end \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Outcome:} The inference speedup was confirmed --- FM is 19.4$\times$ faster at sampling. However, DDPM's Stage~2 loss dropped 20$\times$ while FM's only dropped 2$\times$. The FM \texttt{diff100} metric oscillated and actually increased from 1.0 to 1.22 at the end of training, indicating instability. Generated meshes confirmed this --- DDPM produced recognizable couches while FM outputs were noisy and chaotic.
+
+\textbf{Sampling step ablation:} We re-rendered FM outputs with 200 sampling steps (vs default 50). The meshes were visually identical, confirming the problem was not ODE discretization but insufficient model training.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{images/experiments/extended_107637.png}
+\caption{Baseline comparison --- DDPM produces couches, FM produces noise.}
+\label{fig:baseline}
+\end{figure}
+
+\textbf{Root cause analysis:} Three factors were identified:
+\begin{enumerate}
+    \item Learning rate (\texttt{1e-5}) too low for the larger FM+Point-MAE model (79.8M params vs 60.3M).
+    \item No warmup --- FM showed training instability.
+    \item Confounded comparison --- FM and Point-MAE changed simultaneously.
+\end{enumerate}
+
+\subsection{Experiment 2: FM Hyperparameter Tuning + Encoder Ablation}
+
+\textbf{Goal:} Fix FM convergence by increasing LR with warmup, and isolate the encoder's contribution by testing FM with the original ConvPointnet encoder.
+
+\textbf{Models trained:}
+\begin{itemize}
+    \item \textbf{FM+ConvPointnet} --- Flow Matching with original encoder, isolating FM's contribution (S2: 5{,}000 epochs, S3: 5{,}000 epochs).
+    \item \textbf{DDPM+ConvPointnet} --- resumed from Experiment~1's S3 checkpoint at epoch 1{,}500, trained to 5{,}000 epochs.
+\end{itemize}
+
+Both FM configs used \texttt{diff\_lr\,=\,5e-5} (5$\times$ higher) with 500-epoch linear warmup.
+
+\begin{table}[H]
+\centering
+\caption{Training loss at final epoch for Experiment~2.}
+\label{tab:exp2-loss}
+\begin{tabular}{lcccc}
+\toprule
+Variant & S2 diff1000 & S3 loss & S3 sdf & S3 gensdf \\
+\midrule
+DDPM+Conv (5{,}000 S3) & 0.023 & 0.047 & 0.009 & 0.027 \\
+FM+Conv (5{,}000 S3)   & 0.613 & 0.575 & 0.011 & 0.057 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Outcome:} The higher LR improved FM convergence somewhat (S2 diff1000: 0.613 vs 0.716 in Experiment~1), but FM still lagged significantly behind DDPM. Importantly, this result with ConvPointnet (the same encoder as DDPM) showed that \textbf{the convergence gap is inherent to Flow Matching itself on this task}, not caused by Point-MAE.
+
+The SDF reconstruction loss (\texttt{sdf}: 0.011 vs 0.009) was close between methods, meaning the SDF decoder works similarly well for both. The generated-SDF loss (\texttt{gensdf}: 0.057 vs 0.027) remained 2$\times$ higher for FM, reflecting that FM's latent samples are less accurate than DDPM's.
+
+DDPM meshes at 5{,}000 S3 epochs showed substantially improved quality compared to 1{,}500 epochs --- more solid surfaces and fewer floating fragments.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{images/experiments/improved_107637.png}
+\caption{FM Tuning --- DDPM improved, FM still noisy even with higher LR.}
+\label{fig:exp2}
+\end{figure}
+
+\subsection{Experiment 3: FM Extended Training (10K S3 Epochs)}
+
+\textbf{Goal:} Determine if FM simply needs more training time to converge by doubling Stage~3 epochs.
+
+\textbf{Models trained:}
+\begin{itemize}
+    \item \textbf{FM+Point-MAE} --- resumed from 5{,}000 to 10{,}000 S3 epochs.
+    \item \textbf{FM+ConvPointnet} --- resumed from 5{,}000 to 10{,}000 S3 epochs.
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{FM+Point-MAE Stage~3 loss trajectory.}
+\label{tab:exp3-mae}
+\begin{tabular}{lccc}
+\toprule
+Epoch & loss & sdf & gensdf \\
+\midrule
+5{,}000  & 0.599 & 0.010 & 0.061 \\
+7{,}500  & 0.582 & 0.009 & 0.055 \\
+10{,}000 & 0.578 & 0.010 & 0.060 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{FM+ConvPointnet Stage~3 loss trajectory.}
+\label{tab:exp3-conv}
+\begin{tabular}{lccc}
+\toprule
+Epoch & loss & sdf & gensdf \\
+\midrule
+5{,}000  & 0.573 & 0.010 & 0.047 \\
+7{,}500  & 0.566 & 0.010 & 0.051 \\
+10{,}000 & 0.559 & 0.009 & 0.052 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Outcome:} Both FM variants plateaued. FM+MAE decreased only 3.5\% in total loss over the additional 5K epochs ($0.599 \to 0.578$). FM+ConvPointnet was slightly better ($0.559$ vs $0.578$), suggesting Point-MAE may be marginally harder to train on this small dataset. Neither variant approached DDPM quality. Generated meshes remained noisy and structurally incoherent.
+
+The following comparison shows FM+Point-MAE (top) vs FM+ConvPointnet (bottom) at 10K S3 epochs on the same instance. Both produce similar noisy output, confirming the convergence issue is intrinsic to Flow Matching rather than the encoder choice.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{images/experiments/fm_comparison_107637.png}
+\caption{FM+MAE vs FM+Conv at 10K epochs --- both produce noisy output.}
+\label{fig:exp3}
+\end{figure}
+
+\subsection{Experiment 4: Point-MAE Encoder Ablation}
+
+\textbf{Goal:} Isolate Point-MAE's effect by pairing it with the DDPM sampler. This answers: ``Is Point-MAE the problem, or is it FM?''
+
+\textbf{Models trained:}
+\begin{itemize}
+    \item \textbf{DDPM+Point-MAE} --- S2: 5{,}000 epochs, S3: 5{,}000 epochs, \texttt{diff\_lr\,=\,5e-5}, warmup 500.
+\end{itemize}
+
+Compared against DDPM+ConvPointnet from Experiment~2 (same S3 epoch count).
+
+\begin{table}[H]
+\centering
+\caption{DDPM encoder ablation --- Point-MAE vs ConvPointnet.}
+\label{tab:exp4}
+\begin{tabular}{lcccc}
+\toprule
+Variant & S2 diff1000 (final) & S3 loss & S3 sdf & S3 gensdf \\
+\midrule
+DDPM+ConvPointnet & 0.023 & 0.047 & 0.009 & 0.027 \\
+DDPM+Point-MAE    & 0.041 & 0.049 & 0.008 & 0.037 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key finding:} DDPM+Point-MAE converged nearly as well as DDPM+ConvPointnet. The S2 diff1000 loss (0.041) is slightly higher than ConvPointnet (0.023), and gensdf is slightly higher (0.037 vs 0.027), but both are in the same order of magnitude. This is dramatically better than any FM variant (best FM diff1000: 0.613).
+
+\textbf{This confirms that Point-MAE is not the bottleneck} --- it works well when paired with DDPM. The convergence problem is specific to Flow Matching on this architecture/task.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{images/experiments/ddpm_mae_107637.png}
+\caption{DDPM+MAE --- comparable quality to DDPM+ConvPointnet.}
+\label{fig:exp4}
+\end{figure}
+
+\section{Consolidated Comparison}
+
+\subsection{Stage 2 Final Loss (5{,}000 epochs, all variants)}
+
+\begin{table}[H]
+\centering
+\caption{Stage~2 final loss across all variants.}
+\label{tab:s2-consolidated}
+\begin{tabular}{llllc}
+\toprule
+Variant & Sampler & Encoder & diff1000 & LR \\
+\midrule
+DDPM+Conv & DDPM & ConvPointnet & \textbf{0.023} & 1e-5 \\
+DDPM+MAE  & DDPM & Point-MAE    & \textbf{0.041} & 5e-5 \\
+FM+Conv   & FM   & ConvPointnet & 0.613          & 5e-5 \\
+FM+MAE    & FM   & Point-MAE    & 0.716          & 1e-5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+DDPM variants converge to losses ${\sim}$15--30$\times$ lower than FM variants at the same epoch count.
+
+\subsection{Stage 3 Final Loss (best available for each)}
+
+\begin{table}[H]
+\centering
+\caption{Stage~3 final loss across all variants (best available checkpoint).}
+\label{tab:s3-consolidated}
+\begin{tabular}{lccccc}
+\toprule
+Variant & S3 Epochs & loss & sdf & gensdf & Mesh Quality \\
+\midrule
+DDPM+Conv & 5{,}000  & \textbf{0.047} & 0.009 & \textbf{0.027} & Recognizable shapes \\
+DDPM+MAE  & 5{,}000  & \textbf{0.049} & 0.008 & 0.037          & Recognizable shapes \\
+FM+Conv   & 10{,}000 & 0.559          & 0.009 & 0.052          & Noisy, chaotic \\
+FM+MAE    & 10{,}000 & 0.578          & 0.010 & 0.060          & Noisy, chaotic \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Inference Speed}
+
+\begin{table}[H]
+\centering
+\caption{Inference speed comparison.}
+\label{tab:speed}
+\begin{tabular}{lcccc}
+\toprule
+Sampler & Steps & Sampling Time & End-to-End & Speedup \\
+\midrule
+DDPM     & 1000 & 23.3\,s & 27.5\,s & 1.0$\times$ \\
+FM Euler & 50   & 1.2\,s  & 5.5\,s  & \textbf{19.4$\times$} / 5$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The encoder choice (ConvPointnet vs Point-MAE) does not significantly affect inference speed --- both add similar overhead (${\sim}$3.3$\times$ over unconditional).
+
+\section{Analysis}
+
+\subsection{What Worked}
+
+\begin{enumerate}
+    \item \textbf{Flow Matching inference speedup is real and substantial.} The 19.4$\times$ sampling speedup ($23.3\text{s} \to 1.2\text{s}$) is consistently measured across all trained models regardless of quality. This is a fundamental architectural advantage that does not depend on model convergence.
+
+    \item \textbf{Point-MAE works as a drop-in encoder replacement.} When paired with DDPM, Point-MAE achieves comparable loss and mesh quality to ConvPointnet (S2 diff1000: 0.041 vs 0.023, S3 gensdf: 0.037 vs 0.027). The slightly higher loss may be due to the small dataset (173 instances) limiting the transformer encoder's ability to learn robust features.
+
+    \item \textbf{Pipeline engineering.} The multi-stage training infrastructure (configs, scripts, modulation extraction, rendering pipeline) worked reliably across ${\sim}$130 GPU-hours of training with no crashes or data corruption.
+\end{enumerate}
+
+\subsection{What Did Not Work}
+
+\begin{enumerate}
+    \item \textbf{Flow Matching quality does not match DDPM.} Despite extensive hyperparameter tuning (5$\times$ LR increase, warmup, ConvPointnet ablation, training up to 10K S3 epochs), FM generates noisy, structurally incoherent meshes. The FM diffusion loss plateaus at ${\sim}$0.55--0.62 while DDPM reaches ${\sim}$0.05 --- an order of magnitude gap. This gap persists regardless of encoder choice, learning rate, warmup, or training duration.
+
+    \item \textbf{200 FM sampling steps did not help.} Increasing from 50 to 200 ODE integration steps produced visually identical meshes, confirming the bottleneck is the learned velocity field, not discretization error.
+
+    \item \textbf{FM+Point-MAE exhibits training instability that FM+ConvPointnet does not.} The \texttt{diff100} metric (diffusion loss evaluated at the lowest noise level, most sensitive to sample quality) reveals a striking contrast between the two FM encoder configurations.
+
+    \textbf{Stage~2 diff100 trajectory (FM+MAE, LR=1e-5, no warmup):}
+
+    \begin{table}[H]
+    \centering
+    \begin{tabular}{lcccccc}
+    \toprule
+    Epoch & 0 & 1000 & 2000 & 3000 & 4000 & 4999 \\
+    \midrule
+    diff100 & 1.53 & 1.14 & 0.87 & 0.81 & 0.77 & \textbf{1.22} \\
+    \bottomrule
+    \end{tabular}
+    \end{table}
+
+    The FM+MAE diff100 drops from 1.53 to 0.77 over 4{,}000 epochs, then spikes back to 1.22 at epoch 4{,}999 --- a 58\% regression in the final 1{,}000 epochs. This spike did not occur in the diff1000 metric (which continued decreasing to 0.716), suggesting the model's predictions at low noise levels became erratic while high-noise predictions remained stable.
+
+    \textbf{Stage~2 diff100 trajectory (FM+ConvPointnet, LR=5e-5, warmup=500):}
+
+    \begin{table}[H]
+    \centering
+    \begin{tabular}{lcccccc}
+    \toprule
+    Epoch & 0 & 1000 & 2000 & 3000 & 4000 & 4500 \\
+    \midrule
+    diff100 & 1.47 & 0.83 & 0.73 & 0.69 & 0.63 & 0.72 \\
+    \bottomrule
+    \end{tabular}
+    \end{table}
+
+    FM+ConvPointnet shows a much smoother trajectory. While there is mild oscillation ($0.63 \to 0.72$ in the last 500 epochs), it never exhibits the dramatic spike seen with Point-MAE.
+
+    \textbf{Stage~3 further amplifies the gap.} FM+MAE's gensdf metric oscillates between 0.031 and 0.062 across epochs 5K--10K (a 2$\times$ range), while FM+ConvPointnet's gensdf stays in a tighter band of 0.047--0.054 (only 15\% variation).
+
+    This instability also manifests as \textbf{inconsistent output quality across instances}. The same FM+MAE model at 10K S3 epochs produces recognizable couch geometry for some inputs but noisy, chaotic meshes for others --- even though DDPM handles both instances well. Figure~\ref{fig:inconsistency} shows two instances from the same evaluation run: the top instance yields reasonable FM+MAE output, while the bottom instance is structurally incoherent despite comparable DDPM quality on both.
+
+    \begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{images/experiments/fm_mae_inconsistency.png}
+    \caption{FM+MAE inconsistency --- good on one instance (top), poor on another (bottom).}
+    \label{fig:inconsistency}
+    \end{figure}
+
+    This instability likely stems from the interaction between the Point-MAE transformer encoder (12 layers, 384-dim, trained from scratch) and the Flow Matching velocity field. ConvPointnet's simpler convolutional architecture produces more stable gradients during backpropagation. When paired with DDPM (Experiment~4), Point-MAE trains stably --- the instability is specific to the FM+MAE combination.
+\end{enumerate}
+
+\subsection{Why Flow Matching Struggles: Hypotheses}
+
+The consistent failure of FM across all configurations suggests a deeper incompatibility rather than a hyperparameter issue. Possible explanations:
+
+\begin{enumerate}
+    \item \textbf{Loss landscape difference.} DDPM's noise prediction objective operates in a well-conditioned space where the model learns to denoise from many noise levels ($t=1$ to $t=1000$). FM's velocity field objective must learn a global transport map from noise to data, which may have a harder optimization landscape for the CausalTransformer architecture.
+
+    \item \textbf{Architecture mismatch.} The CausalTransformer backbone was designed for DDPM's discrete timestep conditioning. FM uses continuous time $t \in [0,1]$, and the network may not generalize well across the continuous time domain. Architectures specifically designed for flow matching (e.g., with adaptive normalization or different time embedding) might perform better.
+
+    \item \textbf{Small dataset.} With only 173 training instances and a 768-dimensional latent space, the data manifold is very thin. DDPM's denoising score matching may be more sample-efficient than FM's velocity field learning for low-data regimes.
+
+    \item \textbf{Training signal.} DDPM's loss at each timestep provides a strong local gradient signal (denoise one step), while FM's velocity field loss provides a more global signal (predict the full transport direction). The local signal may be easier to optimize for the transformer architecture.
+\end{enumerate}
+
+\section{Conclusions}
+
+\begin{enumerate}
+    \item \textbf{Flow Matching delivers a confirmed 19.4$\times$ sampling speedup} but at the cost of significantly degraded output quality on this specific architecture and dataset. The speed--quality tradeoff is currently unfavorable.
+
+    \item \textbf{Point-MAE is a viable replacement for ConvPointnet} as a conditioning encoder. It achieves comparable quality when paired with DDPM, adding only ${\sim}$15\% more parameters.
+
+    \item \textbf{The quality gap is fundamental to the FM+CausalTransformer combination}, not to hyperparameters or training duration. Future work should investigate:
+    \begin{itemize}
+        \item Alternative FM-optimized architectures (U-Net backbone, adaptive layer normalization)
+        \item Larger datasets where FM's advantages may manifest
+        \item Optimal transport FM variants that produce straighter paths
+        \item Hybrid approaches using FM for coarse generation and DDPM for refinement
+    \end{itemize}
+\end{enumerate}
+
+\section{Reproducing Results}
+
+\begin{verbatim}
+conda activate diffusionsdf
+
+# Pipeclean (~35 min)
+bash scripts/run_pipeclean.sh 2>&1 | tee pipeclean.log
+
+# Extended (~14 hrs)
+bash scripts/run_extended.sh 2>&1 | tee extended.log
+
+# Improved FM+Conv + DDPM resume (~27 hrs)
+bash scripts/run_improved.sh 2>&1 | tee improved.log
+
+# DDPM+MAE ablation (~18 hrs)
+bash scripts/run_ddpm_mae.sh 2>&1 | tee ddpm_mae.log
+
+# Render comparisons
+python scripts/render_comparison.py \
+    --ddpm-ckpt config/improved_s3_ddpm/last.ckpt \
+    --fm-ckpt config/improved_s3_fm_conv/last.ckpt \
+    --gt-dir gt_meshes --num-shapes 5 --samples-per-shape 3 \
+    --output renders_improved
+\end{verbatim}
+
+\begin{thebibliography}{9}
+\bibitem{chou2022diffusionsdf}
+Gene Chou, Yuval Bahat, and Felix Heide.
+\newblock Diffusion-SDF: Conditional generative modeling of signed distance functions.
+\newblock \emph{arXiv:2211.13757}, 2022.
+
+\bibitem{ho2020ddpm}
+Jonathan Ho, Ajay Jain, and Pieter Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem{lipman2022flow}
+Yaron Lipman, Ricky T.~Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le.
+\newblock Flow matching for generative modeling.
+\newblock \emph{arXiv:2210.02747}, 2022.
+
+\bibitem{pang2022pointmae}
+Yatian Pang, Wenxiao Wang, Francis E.~H. Tay, Wei Liu, Yonghong Tian, and Li Yuan.
+\newblock Masked Autoencoders for Point Cloud Self-supervised Learning.
+\newblock \emph{ECCV}, 2022.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,45 @@
+{
+  "Description" : "Ablation Stage 2: DDPM + Point-MAE (5000 epochs, pipeclean S1)",
+  "pc_path" : "data",
+  "total_pc_size" : 10000,
+  "TrainSplit" : "data/splits/couch_mini.json",
+  "TestSplit" : "data/splits/couch_mini.json",
+  "data_path" : "config/pipeclean_s1/modulations",
+
+  "training_task": "diffusion",
+
+  "num_epochs" : 5000,
+  "log_freq" : 500,
+  "warmup_epochs" : 500,
+
+  "diff_lr" : 5e-5,
+
+  "diffusion_specs" : {
+    "timesteps" : 1000,
+    "objective" : "pred_x0",
+    "loss_type" : "l2",
+    "perturb_pc" : "partial",
+    "crop_percent": 0.5,
+    "sample_pc_size" : 128
+  },
+  "diffusion_model_specs": {
+    "dim" : 768,
+    "depth" : 4,
+    "ff_dropout" : 0.3,
+    "cond" : true,
+    "cross_attn" : true,
+    "cond_dropout": true,
+    "point_feature_dim" : 128,
+    "cond_encoder" : "point_mae",
+    "point_mae_specs" : {
+      "num_group" : 64,
+      "group_size" : 32,
+      "encoder_dim" : 384,
+      "trans_dim" : 384,
+      "depth" : 12,
+      "num_heads" : 6,
+      "drop_path_rate" : 0.1,
+      "freeze" : false
+    }
+  }
+}

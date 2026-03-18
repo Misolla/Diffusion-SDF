@@ -1,5 +1,5 @@
 {
-  "Description" : "Improved Stage 3: FM + Point-MAE end-to-end, LR 5e-5 with 500-epoch warmup (5000 epochs)",
+  "Description" : "Improved Stage 3: FM + Point-MAE end-to-end",
   "DataSource" : "data",
   "GridSource" : "data/grid_data",
   "TrainSplit" : "data/splits/couch_mini.json",
@@ -7,12 +7,12 @@
   "modulation_path" : "config/pipeclean_s1/modulations",
 
   "modulation_ckpt_path" : "config/pipeclean_s1/last.ckpt",
-  "diffusion_ckpt_path" : "config/improved_s2_fm/last.ckpt",
+  "diffusion_ckpt_path" : "config/extended_s2_fm/last.ckpt",
 
   "training_task": "combined",
   "generative_model": "flow_matching",
 
-  "num_epochs" : 5000,
+  "num_epochs" : 10000,
   "log_freq" : 1000,
   "warmup_epochs" : 500,
 

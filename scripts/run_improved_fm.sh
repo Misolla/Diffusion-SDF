@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 #
-# Improved training: fair comparison at 5000 S3 epochs.
+# Improved training: 10000 S3 epochs.
 #
-#   DDPM + ConvPointnet  (baseline)
 #   FM   + PointMAE
 #
 # Reuses:
 #   - Stage 1 checkpoint from pipeclean (epoch 10500)
-#   - Stage 2 FM+PointMAE checkpoint from extended run (5000 epochs)
+#   - Stage 2 FM+PointMAE checkpoint from extended run (10000 epochs)
 #
 # Epoch counts:
-#   Stage 3 FM+PointMAE:              1500→5000    resumed           (~10 hrs)
+#   Stage 3 FM+PointMAE:              1500→5000->10000    resumed      
 #
-# Estimated total runtime: ~10 hours
 #
 # Usage:
 #   conda activate diffusionsdf

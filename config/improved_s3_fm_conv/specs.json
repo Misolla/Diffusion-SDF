@@ -12,7 +12,7 @@
   "training_task": "combined",
   "generative_model": "flow_matching",
 
-  "num_epochs" : 5000,
+  "num_epochs" : 10000,
   "log_freq" : 1000,
   "warmup_epochs" : 500,
 
